@@ -1,0 +1,16 @@
+---
+- block: #####################################  >> CHANGE DRIVER TO SYSTEMD <<  #####################################
+  - name: Create path
+    file:
+      path: /etc/docker
+      state: directory
+  - name: Copy Docker json to node
+    copy:
+      src: docker-daemon.json
+      dest: /etc/docker/daemon.json
+  - name: Docker restart
+    systemd:
+      name: docker
+      state: restarted
+      enabled: yes
+      daemon_reload: yes

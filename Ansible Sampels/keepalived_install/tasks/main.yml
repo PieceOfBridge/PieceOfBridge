@@ -1,0 +1,23 @@
+---
+- block: #======= Install Keepalived =======#
+  - name: Install Keepalived
+    yum: 
+      name: keepalived
+      state: latest
+  when: "g_name in group_names"
+- block: #======= Creating config and script fo Keepalived =======#
+  - name: Creating probe script
+    template:
+      src: check_apiserver.j2
+      dest: /etc/keepalived/check_apiserver.sh
+      mode: u+x
+  - name: Creating config
+    template:
+      src: keepalived_conf.j2
+      dest: /etc/keepalived/keepalived.conf
+  - name: keepalived service
+    service: 
+      name: keepalived 
+      state: restarted 
+      enabled: yes
+  when: "g_name  in group_names"

@@ -1,0 +1,17 @@
+---
+- block: #####################################  >> COPY CONFIG <<  #####################################
+  - name: Mkdir .kube for admin.conf
+    file:
+      path: ~/.kube
+      state: directory
+  - name: Copy admin.conf to ~/.kube
+    copy:
+      src: /etc/kubernetes/admin.conf
+      dest: ~/.kube/config
+      remote_src: yes
+  - name: Add export to bashrc
+    lineinfile:
+      path: ~/.bashrc
+      line: "#export KUBECONFIG=/etc/kubernetes/admin.conf"
+    become_user: "{{ r_usr.stdout }}"
+  when: "inventory_hostname == groups['kube_masters'][0]"

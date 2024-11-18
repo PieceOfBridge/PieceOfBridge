@@ -1,0 +1,179 @@
+---
+# tasks file for k8s_install 
+- block: #####################################  >> UPLOAD IMAGE AND ADD CONTAINERS <<   ##################################### 
+    - name: Copy docker images
+      copy:
+        src: docker_image
+        dest: /srv
+        directory_mode: yes
+    - name: Make list of docker image in /srv folder
+      find:
+        paths: /srv/docker_image
+        patterns: "*.tar"
+      register: docker_images
+    - name: Docker load image
+      shell: docker load -i "{{ item.path }}"
+      args:
+        chdir: /srv/docker_image
+      with_items: "{{ docker_images.files }}"
+
+- block: #####################################  >> INSTALL K8S COMPONENT <<   #####################################
+    - name: Copy kubernetes.repo file to srv
+      copy:
+        src: kubernetes.repo
+        dest: /etc/yum.repos.d/kubernetes.repo
+    - name: Instal component of k8s
+      yum:
+        name:
+        - kubelet == {{ kblt | default('1.20.5') }}
+        - kubeadm == {{ kbdm | default('1.20.5') }}
+        - kubectl == {{ kbctl | default('1.20.5') }}
+        state: present
+        disable_excludes: kubernetes
+    - name: enabled k8s
+      systemd:
+        name: kubelet
+        enabled: true  
+  rescue:
+        - name: Copying rpm to servers
+          copy:
+            src: k8s
+            dest: /tmp
+            directory_mode: yes
+        - name: Find all rpm files in /tmp folder
+          find:
+            paths: "/tmp/k8s"
+            patterns: "*.rpm"
+          register: rpm_files
+        - name: Setting rpm_list
+          set_fact:
+            rpm_list: "{{ rpm_files.files | map(attribute='path') | list}}"
+        - name: installing the rpm files
+          yum:
+            name: "{{rpm_list}}"
+            state: present
+        - name: Remove rpm
+          file:
+            path: /tmp/k8s
+            state: absent
+        - name: enabled k8s
+          systemd:
+            name: kubelet
+            enabled: true
+
+- block: #####################################  >> TEST INITIALIZATION OF THE FIRST NODE OF CLUSTER <<   #####################################
+  - name: Copy config
+    template:
+      src: init_config.j2
+      dest: ~/init_config.yaml 
+  - name: Test init first node
+    shell: kubeadm init --config init_config.yaml --upload-certs --dry-run
+    args:
+      chdir: ~/
+    register: kubeadm_out
+    ignore_errors: yes
+  - name: Displaying an error message
+    pause:
+      prompt: |
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+        {{ kubeadm_out.stderr_lines }}
+
+        /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+        Check out the errors during the trial initialization of the cluster and answer whether you want to start building the cluster. (yes/no)
+    register: user_answr
+  - name: End of play
+    meta: end_play
+    when: user_answr.user_input != "yes"
+  when: "inventory_hostname == groups['kube_masters'][0]"
+
+- block: #####################################  >> INITIALIZATION OF THE FIRST NODE OF CLUSTER <<   #####################################
+  - name: Init first node
+    shell: kubeadm init --config init_config.yaml --upload-certs
+    args:
+      chdir: ~/
+    ignore_errors: yes
+    register: kubeadm_out
+  - name: Displaying message from kubeadm
+    pause: 
+      prompt: |
+          /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+          {{ kubeadm_out.stdout }}
+
+          /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  - name: Set command to join node
+    set_fact:
+      k8s_join_token: "{{ kubeadm_out.stdout | regex_search('.*(kubeadm join .* --token [a-zA-Z0-9]+.[a-zA-Z0-9]+) .*') | regex_replace('\\\\', '') | regex_replace('  ', '') }}"
+      k8s_discovery_token_ca_cert_hash: "{{ kubeadm_out.stdout | regex_search('.*(--discovery-token-ca-cert-hash [a-zA-Z0-9]+:[a-zA-Z0-9]+) .*') | regex_replace('\\\\', '') | regex_replace('  ', '') }}"
+      k8s_certificate_key: "{{ kubeadm_out.stdout | regex_search('.*(--control-plane --certificate-key [a-zA-Z0-9]+).*') | regex_replace('\\\\', '') | regex_replace('  ', '') }}"
+      cacheable: yes
+  - name: Add kube config for root
+    include_tasks: Add_kube_conf.yaml
+  - name: Copy weave-net manifest
+    copy:
+      src: weave-net.yaml
+      dest: ~/
+  - name: Deploy weave-net
+    shell: kubectl apply -f weave-net.yaml
+    args:
+      chdir: ~/
+  - name: Check weave-net readiness 
+    include_tasks: Check_weave-net_ready.yaml
+  - name: Check node readiness
+    include_tasks: Check_node_ready.yaml
+  - name: Acept for command
+    pause:
+      prompt: |
+          /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+          Control Plane Command -->> {{ (k8s_join_token + k8s_discovery_token_ca_cert_hash + k8s_certificate_key) }}
+
+          Worker Command -->> {{ (k8s_join_token + k8s_discovery_token_ca_cert_hash) }}
+
+          /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+  when: 
+  - "inventory_hostname == groups['kube_masters'][0]"
+
+- block: #####################################  >> INITIALIZATION OTHER CONTROL PLANE NODE OF CLUSTER <<   #####################################
+    - name: Master node initialization
+      shell: "{{ (hostvars[groups['kube_masters'][0]].k8s_join_token + hostvars[groups['kube_masters'][0]].k8s_discovery_token_ca_cert_hash + hostvars[groups['kube_masters'][0]].k8s_certificate_key) }}"
+      register: command_result
+      failed_when: "'FAILED' in command_result.stderr"
+    - name: Check weave-net readiness
+      include_tasks: Check_weave-net_ready.yaml
+    - name: Check node readiness
+      include_tasks: Check_node_ready.yaml
+  throttle: 1
+  when: 
+    - "inventory_hostname != groups['kube_masters'][0]"
+    - '"kube_masters" in group_names'
+
+- block: #####################################  >> INITIALIZATION OTHER WORKER NODE OF CLUSTER <<   #####################################
+    - name: Worker node initialization
+      shell: "{{ (hostvars[groups['kube_masters'][0]].k8s_join_token + hostvars[groups['kube_masters'][0]].k8s_discovery_token_ca_cert_hash) }}"
+      register: command_result
+      failed_when: "'FAILED' in command_result.stderr"
+    - name: Check weave-net readiness
+      include_tasks: Check_weave-net_ready.yaml  
+    - name: Check node readiness
+      include_tasks: Check_node_ready.yaml  
+  throttle: 1
+  when: 
+    - '"kube_workers" in group_names'
+
+- block: #####################################  >> CLUSTER PREPARATION <<   #####################################
+  - name: Add label to worker node
+    shell: kubectl label node {{ item }} node-role.kubernetes.io/worker=worker
+    loop: "{{ groups['kube_workers'] }}"
+  - name: Copy Helm and Velero Binary
+    copy:
+      src: "{{ item.src }}"
+      dest: /usr/bin/{{ item.src }}
+      mode: a+x
+    with_items:
+      - { src: 'helm' }
+      - { src: 'velero' }
+  when: 
+  - "inventory_hostname == groups['kube_masters'][0]"

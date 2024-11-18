@@ -1,0 +1,41 @@
+---
+- block: #======= Disable SELinux =======#
+    - name: Notification about disabling SELinux 
+      debug:
+        msg: "Notification about disabling SELinux"
+    - name: Disabling SELinux
+      selinux:
+        state: disabled
+- block: #======= Disable Firewall =======#
+    - name: Notification about disabling Firewall
+      debug:
+        msg: "Notification about disabling Firewall"
+    - name: Disabling Firewall
+      systemd:
+        state: stopped
+        name: firewalld
+        enabled: no
+- block: #======= Disable SWAP =======#
+    - name:
+      shell: swapoff -a
+    - name: Remove Swap from fstab
+      mount:
+        name: swap
+        fstype: swap
+        state: absent
+    - name: Comment swap in fstab
+      replace:
+        path: /etc/fstab
+        regexp: '(.*swap.*)'
+        replace: '# \1'
+- block: #======= Add CORE module =======#
+    - name: Add CORE module br_netfilter to /etc/modules-load.d/k8s.conf
+      shell: echo br_netfilter > /etc/modules-load.d/k8s.conf
+      args:
+        chdir: /etc/modules-load.d/
+        creates: k8s.conf
+    - name: Add CORE module to /etc/sysctl.d/k8s.conf
+      shell: echo -e 'net.bridge.bridge-nf-call-ip6tables = 1\nnet.bridge.bridge-nf-call-iptables = 1' > /etc/sysctl.d/k8s.conf && sysctl --system
+      args:
+        chdir: /etc/sysctl.d/
+        creates: k8s.conf

@@ -1,0 +1,157 @@
+---
+# tasks file for etcd_crt_gen
+- name: Get the username running role
+  become: false
+  command: whoami
+  register: r_usr
+  delegate_to: localhost
+
+
+- block: #####################################  >> COPY FILE FOR SSL <<  #####################################
+  - set_fact:
+          dir_name: "~/etcd_crt/{{ g_name }}-etcd_certs-{{ ansible_date_time.date }}_{{ ansible_date_time.hour }}-{{ ansible_date_time.minute }}"
+  - name: Create dir for crt generation
+    file:
+      path: "{{ dir_name }}"
+      state: directory
+    become: false
+  - name: Copu cloudlare to bin
+    copy:
+      src: "{{ item.src }}"
+      dest: /usr/bin/{{ item.src }}
+      mode: a+x
+    with_items:
+      - { src: 'cfssl' }
+      - { src: 'cfssljson' }
+  - name: Copy Client.json & ca-config.json to ~/etcd_crt/
+    copy:
+      src: "{{ item.file }}"
+      dest: "{{ dir_name }}/{{ item.file }}"
+    with_items:
+      - { file: 'client.json' }
+      - { file: 'ca-config.json'}
+    become: false
+  delegate_to: localhost
+
+      
+- block: #####################################  >> GENERATE CERTS <<  #####################################
+  - name: Generate root CA
+    shell: echo '{"CN":"CA","key":{"algo":"rsa","size":2048}}' | cfssl gencert -initca - | cfssljson -bare ca -
+    args:
+      chdir: "{{ dir_name }}"
+  - name: Generate cert to each servers
+    shell: echo '{"CN":"{{ ansible_hostname }}","hosts":[""],"key":{"algo":"rsa","size":2048}}' | cfssl gencert -config=ca-config.json -ca=ca.pem -ca-key=ca-key.pem -hostname="{{ ansible_default_ipv4.address }},{{ ansible_hostname }}{{ BASEDOMAIN }},{{ ansible_hostname }}" - | cfssljson -bare {{ ansible_hostname }}
+    args:
+      chdir: "{{ dir_name }}"
+  - name: Generate client cert
+    shell: cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=client client.json | cfssljson -bare client
+    args:
+      chdir: "{{ dir_name }}"
+  delegate_to: localhost
+  become_user: "{{ r_usr.stdout }}"
+
+
+- block: #####################################  >> INSTALL ETCD <<  #####################################
+  - name: Copy etcd and etcdctl
+    copy: 
+      src: "{{ item.etc }}"
+      dest: /usr/bin/
+      mode: a+x
+    with_items:
+      - { etc: 'etcd' }
+      - { etc: 'etcdctl' }
+  - name: Create group for  ETCD
+    group:
+      name: etcd
+      system: yes
+      state: present
+  - name: Create user for  ETCD
+    user:
+      name: etcd
+      group: etcd
+      shell: /sbin/nologin
+  - name: Create dir for ETCD
+    file: 
+      path: /var/lib/etcd/
+      state: directory
+      owner: etcd
+      group: root
+      recurse: yes
+  - name: Create dir for configs ETCD
+    file:
+      path: /etc/etcd
+      state: directory
+  when: "g_name in group_names"
+
+
+- block: #####################################  >> COPY CERTS <<  #####################################
+  - name: Copy servers certs to dest
+    copy:
+      src: "{{ dir_name }}/{{ item.src }}"
+      dest: /etc/etcd/{{ item.dest }}
+    with_items:
+      - { src: '{{ ansible_hostname }}.pem', dest: 'server.crt' }
+      - { src: '{{ ansible_hostname }}-key.pem', dest: 'server.key' }
+  - name: Copy etcd certs to servers
+    copy:
+      src: "{{ dir_name }}/{{ item.src }}"
+      dest: /etc/etcd/{{ item.dest }}
+    with_items:
+      - { src: 'ca.pem', dest: 'etcd-ca.crt'}
+      - { src: 'client.pem', dest: 'client.crt'}
+      - { src: 'client-key.pem', dest: 'client.key'}
+  when: "g_name in group_names"
+
+
+- block: #####################################  >> CREATING SERVICE AND CONFIG <<  #####################################
+  - name: Creating config for ETCD
+    template:
+      src: etcd-config.j2
+      dest: /etc/etcd/etcd.conf
+  - name: Adding rights to ETCD folder
+    file:
+      path: /etc/etcd/
+      owner: etcd
+      group: root
+      recurse: yes
+  - name: Copy etcd unit
+    copy:
+      src: etcd.service
+      dest: /etc/systemd/system/etcd.service
+  - name: etcd service
+    systemd:
+      name: etcd
+      enabled: yes
+      daemon_reload: yes
+  when: "g_name in group_names"
+
+
+- name: Setting rights to etcd-crt dir
+  file:
+    path: "{{ dir_name }}"
+    owner: "{{ r_usr.stdout }}"
+    mode: '0755'
+    recurse: yes
+  delegate_to: localhost
+- name: Add varibels to bashsrc on ferst host
+  lineinfile:
+    path: ~/.bashrc
+    line: "#{{ item }}"
+  loop:
+    - "export ETCDCTL_CACERT=/etc/etcd/etcd-ca.crt"
+    - "export ETCDCTL_CERT=/etc/etcd/client.crt"
+    - "export ETCDCTL_KEY=/etc/etcd/client.key"
+    - "export ETCDCTL_ENDPOINTS={% for h in groups[g_name] %}https://{{ hostvars[h].ansible_default_ipv4.address }}:2379{% if not loop.last %},{% endif %}{% endfor %}"
+    - "export ETCDCTL_API={{ groups[g_name] | length | regex_replace('^\"(.*)\"$', '\\1') }}"
+  become_user: "{{ r_usr.stdout }}"
+  when: inventory_hostname == groups[g_name][0]
+
+- block: #####################################  >> START ETCD <<  #####################################
+  - name: Start etcd
+    systemd:
+      name: etcd
+      state: started
+  - name: Wait
+    pause:
+      seconds: 30
+  when: "g_name in group_names"

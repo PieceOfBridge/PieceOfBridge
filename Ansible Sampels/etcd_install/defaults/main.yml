@@ -1,0 +1,5 @@
+---
+BASEDOMAIN: mgts.corp.net
+master1: mgts-k8s-m01
+master2: mgts-k8s-m02
+master3: mgts-k8s-m03

@@ -1,0 +1,10 @@
+---
+  - name: Docker start
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+      daemon_reload: yes
+
+  - name: Systemd
+    include_tasks: tasks/systemd_driver.yaml 

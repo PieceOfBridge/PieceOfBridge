@@ -1,0 +1,8 @@
+---
+- name: Check weave-net ready
+  shell: kubectl get daemonset weave-net -n kube-system -o json
+  register: kubectl_get_weave
+  until: kubectl_get_weave.stdout | from_json | json_query('status.numberReady') == kubectl_get_weave.stdout | from_json | json_query('status.desiredNumberScheduled')
+  retries: 5
+  delay: 15
+  when: "inventory_hostname == groups['kube_masters'][0]"

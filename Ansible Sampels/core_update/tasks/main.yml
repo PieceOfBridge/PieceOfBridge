@@ -1,0 +1,33 @@
+---
+- name: Add Oracle repo
+  copy:
+    src: public-yum-ol7.repo
+    dest: /etc/yum.repos.d/
+- name: Enable uekr5
+  yum_repository:
+    name: ol7_uekr5
+    file: public-yum-ol7.repo
+    proxy: mgts-zabbixs01:15555
+    proxy_username: zabbix_user
+    proxy_password: OosoTeet5deel
+    state: absent
+- name: Desable uekr4
+  yum_repository:
+    name: ol7_uekr4
+    enabled: no
+    file: public-yum-ol7.repo
+    proxy: mgts-zabbixs01:15555
+    proxy_username: zabbix_user
+    proxy_password: OosoTeet5deel
+    state: absent
+- name: Upgdate kernel
+  yum:
+    name: '*'
+    state: latest
+  environment:
+    https_proxy: https://zabbix_user:OosoTeet5deel@mgts-zabbixs01:15555
+    http_proxy: http://zabbix_user:OosoTeet5deel@mgts-zabbixs01:15555
+- name: Reboot srv
+  reboot:
+    msg: "Reboot initiated by Ansible"
+    reboot_timeout: 1200

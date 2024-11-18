@@ -1,0 +1,67 @@
+---
+- block: #####################################  >> INSTALL DOCKER FROM REPO <<  #####################################
+  - name: Remove docker
+    yum:
+      name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - runc
+      state: absent
+  - name: Add docker repo
+    copy:
+      src: docker-ce.repo
+      dest: /etc/yum.repos.d/docker-ce.repo
+  - name: Install Docker from repo
+    yum:
+      name:
+      - docker-ce-{{ dckr_ce | default('20.10.8') }}
+      - docker-ce-cli-{{ dckr_ce_cli | default('20.10.8') }}
+      - containerd.io == {{ cntnrd | default('1.4.9') }}
+      state: present
+      update_cache: yes
+    notify:
+      - Systemd 
+      - Docker start
+  - name: Flush handlers
+    meta: flush_handlers
+  rescue:
+    - name: Remove docker
+      yum:
+        name:
+        - docker-ce
+        - docker-ce-cli
+        - containerd.io
+        - runc
+        state: absent
+    - name: Remove repo file
+      file:
+        path: /etc/yum.repos.d/docker-ce.repo
+        state: absent
+    - name: Copying rpm to servers
+      copy:
+        src: docker
+        dest: /tmp
+        directory_mode: yes
+    - name: Find all rpm files in /tmp folder
+      find:
+        paths: "/tmp/docker"
+        patterns: "*.rpm"
+      register: rpm_files
+    - name: Setting rpm_list
+      set_fact:
+        rpm_list: "{{ rpm_files.files | map(attribute='path') | list}}"
+    - name: installing the rpm files
+      yum:
+        name: "{{rpm_list}}"
+        state: present
+      notify: Docker restart
+    - name: Remove rpm
+      file:
+        path: /tmp/docker
+        state: absent
+      notify:
+        - Systemd
+        - Docker start
+    - name: Flush handlers
+      meta: flush_handlers
