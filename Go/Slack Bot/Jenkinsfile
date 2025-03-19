@@ -1,0 +1,14 @@
+node ('docker') {
+    try {
+        stage('Build the Docker image') {
+            sh 'make build'
+        }
+
+        stage('Push the Docker image') {
+            sh 'make push'
+        }
+    catch (ex) {
+        currentBuild.result = 'FAILED'
+        throw ex
+    }
+}
